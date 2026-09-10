@@ -12,7 +12,13 @@ is the price of having nothing to host.
 """
 import base64, hashlib, json, os, pathlib, re, subprocess, sys, urllib.parse, urllib.request
 
-TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
+TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+if not TOKEN:
+    # The cron fires every five minutes whether or not anyone has set the
+    # secrets, and a hard crash there means a failure notification every five
+    # minutes forever. Say what is missing, once, and succeed.
+    print("::warning::TELEGRAM_BOT_TOKEN is not set — set it to enable the bot")
+    raise SystemExit(0)
 REPO  = os.environ["GITHUB_REPOSITORY"]
 API   = "https://api.telegram.org/bot" + TOKEN
 
