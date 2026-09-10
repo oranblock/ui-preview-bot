@@ -71,16 +71,10 @@ jobs:
           else
             cp "snippets/${SNIPPET_ID}.kt" /tmp/snippet.kt
           fi
-          # The scaffold calls one entry point, so the imports it needs are
-          # prepended rather than demanded of whoever wrote the snippet.
-          { echo 'package preview'
-            echo 'import androidx.compose.runtime.Composable'
-            echo 'import androidx.compose.material3.*'
-            echo 'import androidx.compose.foundation.layout.*'
-            echo 'import androidx.compose.ui.Modifier'
-            echo 'import androidx.compose.ui.unit.dp'
-            cat /tmp/snippet.kt
-          } > android-preview/src/test/kotlin/Snippet.kt
+          # Finds the entry point rather than demanding one, so a real file with
+          # its own package line and several composables works unchanged.
+          python3 scripts/prepare.py /tmp/snippet.kt \
+            android-preview/src/test/kotlin/Snippet.kt android
 
       - name: Render with Paparazzi
         id: render
@@ -117,7 +111,7 @@ jobs:
           else
             cp "snippets/${SNIPPET_ID}.swift" /tmp/snippet.swift
           fi
-          { echo 'import SwiftUI'; cat /tmp/snippet.swift; } > ios-preview/Snippet.swift
+          python3 scripts/prepare.py /tmp/snippet.swift ios-preview/Snippet.swift ios
 
       - name: Build swiftui-render
         run: |

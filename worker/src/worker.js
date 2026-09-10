@@ -84,9 +84,46 @@ function allowed(env, chat) {
   return list.length === 0 || list.includes(String(chat));
 }
 
+/** Pull an uploaded .kt/.swift file down from Telegram.
+ *  A real file beats a pasted snippet: no reformatting by the client, no lost
+ *  indentation, and the filename settles the language before any regex does. */
+async function fetchDocument(env, doc) {
+  const name = doc.file_name || "";
+  if (!/\.(kt|kts|swift)$/i.test(name)) return null;
+  // 20 MB is the bot API's download ceiling; a source file nowhere near it that
+  // is still large is almost certainly not a view worth rendering.
+  if (doc.file_size && doc.file_size > 512 * 1024) {
+    throw new Error(`${name} is ${Math.round(doc.file_size / 1024)} KB — too large to render`);
+  }
+  const info = await tg(env, "getFile", { file_id: doc.file_id });
+  if (!info.ok) throw new Error(`getFile: ${info.description}`);
+  const r = await fetch(
+    `https://api.telegram.org/file/bot${env.TELEGRAM_BOT_TOKEN}/${info.result.file_path}`);
+  if (!r.ok) throw new Error(`download ${r.status}`);
+  return { name, code: await r.text(),
+           platform: /\.swift$/i.test(name) ? "ios" : "android" };
+}
+
 async function onMessage(env, msg) {
   const chat = msg.chat.id;
   if (!allowed(env, chat)) return;
+
+  if (msg.document) {
+    const f = await fetchDocument(env, msg.document);
+    if (!f) {
+      await tg(env, "sendMessage", { chat_id: chat,
+        text: `I render .kt and .swift files. ${msg.document.file_name || "that"} is neither.` });
+      return;
+    }
+    const id = await sha10(f.code);
+    await env.SNIPPETS.put(id, f.code, { metadata: { platform: f.platform } });
+    await tg(env, "sendMessage", { chat_id: chat,
+      text: `queued ${f.platform} render · ${f.name} · ${id}` });
+    await dispatch(env, { platform: f.platform, theme: "dark", device: "phone",
+                          chat_id: String(chat), snippet_id: id, code: f.code });
+    return;
+  }
+
   const text = (msg.text || "").trim();
   if (!text) return;
 
