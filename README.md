@@ -51,6 +51,18 @@ exotic views survive the fallback; nothing outside this repo can break it.
 | emulator or simulator | none | none |
 | typical render | seconds | tens of seconds plus a toolchain build |
 
+## The buttons never light up, and still work
+
+Telegram expires a callback query seconds after the tap. This bot answers on a
+cron minutes later, so `answerCallbackQuery` always fails with "query is too old"
+and the button keeps its loading spinner until the client gives up. There is no
+fix inside a serverless design; only an always-on process can acknowledge in
+time.
+
+The re-render itself is unaffected. Tap once, wait for the poll, and the photo is
+replaced in place via `editMessageMedia`. Tapping repeatedly queues one render
+per tap, so tap once.
+
 ## What a snippet must look like
 
 The scaffold calls one entry point, so name it:

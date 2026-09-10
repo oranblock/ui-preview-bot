@@ -130,7 +130,17 @@ def handle_callback(cb):
     chat = str(cb["message"]["chat"]["id"])
     if ALLOW and chat not in ALLOW:
         return
-    tg("answerCallbackQuery", callback_query_id=cb["id"], text="re-rendering…")
+    # Best-effort, and it will essentially always fail. Telegram expires a
+    # callback query after a few seconds; this bot answers on a cron minutes
+    # later, so the acknowledgement is dead on arrival:
+    #   400: query is too old and response timeout expired or query ID is invalid
+    # That is cosmetic — it only clears the spinner on the button. Letting it
+    # abort the handler cost nine taps that did nothing at all.
+    try:
+        tg("answerCallbackQuery", callback_query_id=cb["id"], text="re-rendering…")
+    except Exception as e:
+        print(f"callback ack expired (expected on a cron bot): {e}")
+
     parts = cb["data"].split("|")
     if len(parts) != 5 or parts[0] != "r":
         return
