@@ -36,7 +36,13 @@ env:
   THEME:      ${{ github.event.client_payload.theme      || inputs.theme    || 'dark' }}
   DEVICE:     ${{ github.event.client_payload.device     || inputs.device   || 'phone' }}
   SNIPPET_ID: ${{ github.event.client_payload.snippet_id || inputs.snippet_id }}
-  CHAT:       ${{ github.event.client_payload.chat_id    || inputs.chat_id }}
+  # A self-test dispatched by hand has no chat to answer, so it falls back to
+  # the allowlisted one. Without this the render succeeds and the send dies with
+  # "chat not found", which is a confusing way to report a working renderer.
+  CHAT: >-
+    ${{ github.event.client_payload.chat_id
+        || (inputs.chat_id != '0' && inputs.chat_id)
+        || secrets.TELEGRAM_CHAT_ID }}
   MSG:        ${{ github.event.client_payload.message_id || inputs.message_id }}
   # The snippet is arbitrary user-supplied source. It reaches the runner ONLY as
   # an environment variable and is written out with printf. Interpolating it
