@@ -100,6 +100,20 @@ jobs:
           echo "rc=$?" >> "$GITHUB_OUTPUT"
           grep -E '^e: |error:' render.log | head -20
 
+
+      - name: Keep the render log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          # An artifact, never the job log: this repo is public and a compiler
+          # error quotes the sender's source. Artifacts need auth to download.
+          name: render-log-${{ github.run_id }}-android
+          path: |
+            android-preview/render.log
+            android-preview/build/buttons.txt
+          if-no-files-found: warn
+          retention-days: 7
+
       - name: Send result
         if: always()
         run: bash scripts/send.sh android-preview "${{ steps.render.outputs.rc }}"
@@ -146,6 +160,20 @@ jobs:
           set +e
           bash ios-preview/render.sh
           echo "rc=$?" >> "$GITHUB_OUTPUT"
+
+
+      - name: Keep the render log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          # An artifact, never the job log: this repo is public and a compiler
+          # error quotes the sender's source. Artifacts need auth to download.
+          name: render-log-${{ github.run_id }}-ios
+          path: |
+            ios-preview/render.log
+            /tmp/sr-build.log
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Send result
         if: always()
