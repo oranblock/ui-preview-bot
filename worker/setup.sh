@@ -7,7 +7,7 @@ echo "   npx wrangler kv namespace create SNIPPETS"
 echo
 echo "2. set the three secrets"
 echo "   npx wrangler secret put TELEGRAM_BOT_TOKEN"
-echo "   npx wrangler secret put GITHUB_TOKEN     # fine-grained PAT, Actions: read+write, THIS REPO ONLY"
+echo "   npx wrangler secret put GITHUB_TOKEN     # fine-grained PAT, Contents: read+write, THIS REPO ONLY"
 echo "   npx wrangler secret put WEBHOOK_SECRET   # any random string, e.g. openssl rand -hex 16"
 echo
 echo "3. deploy"

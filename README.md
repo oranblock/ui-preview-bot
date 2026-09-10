@@ -89,7 +89,9 @@ gh secret set TELEGRAM_BOT_TOKEN --repo oranblock/ui-preview-bot
 
 Then the Worker — `worker/setup.sh` prints the five commands in order. It needs
 its own copy of the bot token, a **fine-grained** GitHub token scoped to
-`Actions: read and write` on this repo alone, and a random `WEBHOOK_SECRET`
+**`Contents: read and write`** on this repo alone (creating a repository
+dispatch needs Contents, not Actions — GitHub's 403 for this names no
+permission at all), and a random `WEBHOOK_SECRET`
 which Telegram echoes back on every delivery so the public URL cannot be
 spoofed.
 

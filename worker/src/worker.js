@@ -67,7 +67,16 @@ async function dispatch(env, payload) {
     },
     body: JSON.stringify({ event_type: "render", client_payload: payload }),
   });
-  if (!r.ok) throw new Error(`dispatch ${r.status}: ${(await r.text()).slice(0, 200)}`);
+  if (!r.ok) {
+    const body = (await r.text()).slice(0, 200);
+    // The commonest cause by far, and the message GitHub returns for it names
+    // no permission at all: creating a repository dispatch needs Contents
+    // read+write on a fine-grained token, NOT Actions.
+    const hint = r.status === 403
+      ? " — a fine-grained token needs Contents: read and write for this"
+      : "";
+    throw new Error(`dispatch ${r.status}: ${body}${hint}`);
+  }
 }
 
 function allowed(env, chat) {
@@ -148,6 +157,14 @@ export default {
       // Always 200. Telegram retries a non-2xx, and a retry storm on a bug is
       // worse than a dropped update.
       console.log("handler failed:", e.message);
+      // ...but say so in the chat too. A Worker log nobody is tailing is the
+      // same as no log: this exact failure (a token missing Contents:write)
+      // looked from Telegram like the bot simply ignoring the message.
+      const chat = update.message?.chat?.id || update.callback_query?.message?.chat?.id;
+      if (chat) {
+        await tg(env, "sendMessage", { chat_id: chat, text: `⚠️ ${e.message}`.slice(0, 3500) })
+          .catch(() => {});
+      }
     }
     return new Response("ok");
   },
