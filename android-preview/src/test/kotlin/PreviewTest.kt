@@ -1,34 +1,84 @@
 package preview
 
-import app.cash.paparazzi.DeviceConfig
-import app.cash.paparazzi.Paparazzi
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.lightColorScheme
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.test.hasClickAction
+import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onAllNodes
+import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.test.performClick
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.semantics.getOrNull
+import com.github.takahirom.roborazzi.captureRoboImage
 import org.junit.Rule
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
+import org.robolectric.annotation.GraphicsMode
+import java.io.File
 
 /**
- * Renders the snippet the bot dropped into Snippet.kt.
+ * Renders the snippet, and — the reason this is Roborazzi rather than Paparazzi
+ * — can CLICK it first.
  *
- * Paparazzi draws Compose on the desktop JVM through LayoutLib — no emulator,
- * no APK, no device. That is the whole reason the Android side of this bot is
- * fast and free while the iOS side needs a Mac.
+ * Paparazzi draws through LayoutLib and has no notion of touch, so its pictures
+ * are always the initial state. Roborazzi runs the real Compose test rule under
+ * Robolectric, still on the JVM with no emulator, so a button can be pressed and
+ * the result captured.
  *
- * Theme and device come from the environment because the bot re-runs this same
- * test with different values when someone taps an inline button.
+ * Two things are read from the environment because the bot re-runs this same
+ * test with different values when someone taps in Telegram:
+ *   PREVIEW_THEME / PREVIEW_DEVICE  appearance
+ *   PREVIEW_CLICKS                  comma-separated node indices to click, in order
+ *
+ * It also writes buttons.txt, one clickable label per line. That file is what
+ * turns the real UI's buttons into Telegram's buttons — the names come from the
+ * view itself rather than from anything hardcoded.
  */
+@RunWith(RobolectricTestRunner::class)
+@GraphicsMode(GraphicsMode.Mode.NATIVE)
+@Config(qualifiers = "w411dp-h891dp-xhdpi")
 class PreviewTest {
 
-    private val dark = System.getenv("PREVIEW_THEME") != "light"
-
     @get:Rule
-    val paparazzi = Paparazzi(
-        deviceConfig = if (System.getenv("PREVIEW_DEVICE") == "tablet")
-            DeviceConfig.NEXUS_10 else DeviceConfig.PIXEL_6,
-        theme = if (dark) "android:Theme.Material.NoActionBar"
-                else       "android:Theme.Material.Light.NoActionBar",
-    )
+    val rule = createComposeRule()
 
     @Test
     fun render() {
-        paparazzi.snapshot { Preview() }
+        val dark = System.getenv("PREVIEW_THEME") != "light"
+
+        rule.setContent {
+            MaterialTheme(colorScheme = if (dark) darkColorScheme() else lightColorScheme()) {
+                Surface(modifier = Modifier.fillMaxSize()) { Preview() }
+            }
+        }
+
+        // Clicks are applied before anything is written, so the screenshot and
+        // the button list both describe the state the viewer is actually seeing.
+        System.getenv("PREVIEW_CLICKS").orEmpty()
+            .split(",").filter { it.isNotBlank() }
+            .forEach { idx ->
+                val i = idx.trim().toIntOrNull() ?: return@forEach
+                val nodes = rule.onAllNodes(hasClickAction())
+                runCatching { nodes[i].performClick() }
+                    .onFailure { println("click $i failed: ${it.message}") }
+                rule.waitForIdle()
+            }
+
+        val labels = rule.onAllNodes(hasClickAction()).fetchSemanticsNodes().map { n ->
+            n.config.getOrNull(SemanticsProperties.Text)?.joinToString(" ")?.take(24)
+                ?: n.config.getOrNull(SemanticsProperties.ContentDescription)?.joinToString(" ")?.take(24)
+                ?: "button"
+        }
+        File("build/buttons.txt").apply { parentFile.mkdirs() }
+            .writeText(labels.joinToString("\n"))
+        println("clickable: ${labels.size} -> $labels")
+
+        rule.onRoot().captureRoboImage("build/preview.png")
     }
 }

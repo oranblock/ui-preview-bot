@@ -204,7 +204,7 @@ async function onCallback(env, cb) {
   await tg(env, "answerCallbackQuery", { callback_query_id: cb.id, text: "rendering…" });
   if (!allowed(env, chat)) return;
 
-  const [tag, p, id, theme, device] = (cb.data || "").split("|");
+  const [tag, p, id, theme, device, clicks] = (cb.data || "").split("|");
   if (tag !== "r") return;
   const code = await env.SNIPPETS.get(id);
   if (!code) {
@@ -219,6 +219,7 @@ async function onCallback(env, cb) {
     theme, device, chat_id: String(chat),
     message_id: String(cb.message.message_id),
     snippet_id: id,
+    clicks: clicks || "",
     ...(isZip ? { zip_b64: code } : { code }),
   });
 }

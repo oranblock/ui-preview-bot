@@ -51,6 +51,7 @@ env:
   # bash ever sees it, so quoting cannot save you.
   CODE:       ${{ github.event.client_payload.code }}
   ZIP_B64:    ${{ github.event.client_payload.zip_b64 }}
+  CLICKS:     ${{ github.event.client_payload.clicks }}
 
 jobs:
   android:
@@ -90,11 +91,12 @@ jobs:
         env:
           PREVIEW_THEME:  ${{ env.THEME }}
           PREVIEW_DEVICE: ${{ env.DEVICE }}
+          PREVIEW_CLICKS: ${{ env.CLICKS }}
         run: |
           # set +e so a Kotlin error in someone's snippet is reported back to
           # them rather than ending the job with an opaque red X.
           set +e
-          gradle recordPaparazziDebug --no-daemon > render.log 2>&1
+          gradle testDebugUnitTest --no-daemon > render.log 2>&1
           echo "rc=$?" >> "$GITHUB_OUTPUT"
           grep -E '^e: |error:' render.log | head -20
 

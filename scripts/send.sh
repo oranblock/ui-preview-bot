@@ -13,20 +13,20 @@ API="https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}"
 # TELEGRAM_CHAT_ID is an allowlist and may hold several chats; a send needs one.
 CHAT="${CHAT%%,*}"
 
-PNG=$(find "$DIR" -type f -name '*.png' -newermt '-30 minutes' | head -1)
+# The renderer writes a known path. `find` picking any recent png once returned
+# a Gradle report asset instead of the preview.
+PNG="${DIR}/build/preview.png"
+[ -s "$PNG" ] || PNG=$(find "$DIR" -type f -name '*.png' -newermt '-30 minutes' | head -1)
 
-# Both buttons flip one axis and keep the other, so callback_data stays inside
-# Telegram's 64-byte cap while carrying enough to re-render exactly.
-p=${PLATFORM:0:1}
-[ "$THEME" = dark ] && flip=light || flip=dark
-[ "$DEVICE" = phone ] && other=tablet || other=phone
-[ "$flip" = light ] && flip_label='☀️ light' || flip_label='🌙 dark'
-[ "$other" = phone ] && other_label='📱 phone' || other_label='🖥 tablet'
-KB=$(printf '{"inline_keyboard":[[{"text":"%s","callback_data":"r|%s|%s|%s|%s"},{"text":"%s","callback_data":"r|%s|%s|%s|%s"}]]}' \
-      "$flip_label"  "$p" "$SNIPPET_ID" "$flip"  "$DEVICE" \
-      "$other_label" "$p" "$SNIPPET_ID" "$THEME" "$other")
+# The keyboard is built from what the renderer FOUND clickable, so a view's own
+# buttons become Telegram's buttons. buttons.txt is absent on iOS and on a
+# failed render; keyboard.py then emits appearance controls only.
+BUTTONS="${DIR}/build/buttons.txt"
+[ -f "$BUTTONS" ] || BUTTONS="-"
+KB=$(python3 scripts/keyboard.py "$BUTTONS" "$PLATFORM" "$SNIPPET_ID" "$THEME" "$DEVICE" "${CLICKS:-}")
 
 CAPTION="${PLATFORM} · ${THEME} · ${DEVICE} · ${SNIPPET_ID}"
+[ -n "${CLICKS:-}" ] && CAPTION="${CAPTION} · clicked ${CLICKS}"
 
 if [ "$RC" = 0 ] && [ -n "$PNG" ]; then
   if [ -n "${MSG:-}" ]; then
