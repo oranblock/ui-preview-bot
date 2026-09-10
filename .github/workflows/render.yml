@@ -1,0 +1,122 @@
+name: Render snippet
+
+# Renders one stored snippet and sends the PNG to Telegram.
+#
+# Two jobs because the two platforms cannot share a runner: Compose renders on
+# the JVM via LayoutLib and runs on free Linux, while SwiftUI has no Linux
+# implementation at all and needs macOS. Each job gates itself on `platform`, so
+# exactly one runs per dispatch.
+on:
+  workflow_dispatch:
+    inputs:
+      snippet_id: { required: true,  description: 'basename under snippets/' }
+      platform:   { required: true,  description: 'android | ios' }
+      theme:      { required: false, default: 'dark' }
+      device:     { required: false, default: 'phone' }
+      chat_id:    { required: true }
+      message_id: { required: false, default: '', description: 'edit this message in place instead of sending a new one' }
+
+concurrency:
+  # Keyed by the snippet AND its options: tapping "dark" must not cancel the
+  # "tablet" render of the same snippet. The iOS harness made that mistake twice.
+  group: render-${{ inputs.snippet_id }}-${{ inputs.theme }}-${{ inputs.device }}
+  cancel-in-progress: true
+
+jobs:
+  android:
+    if: inputs.platform == 'android'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: '17', cache: gradle }
+
+      - name: Place the snippet
+        run: |
+          set -euo pipefail
+          SRC="snippets/${{ inputs.snippet_id }}.kt"
+          [ -f "$SRC" ] || { echo "::error::$SRC missing"; exit 1; }
+          # The scaffold expects exactly one @Composable named Preview.
+          { echo 'package preview'
+            echo 'import androidx.compose.runtime.Composable'
+            echo 'import androidx.compose.material3.*'
+            echo 'import androidx.compose.foundation.layout.*'
+            echo 'import androidx.compose.ui.Modifier'
+            echo 'import androidx.compose.ui.unit.dp'
+            cat "$SRC"
+          } > android-preview/src/test/kotlin/Snippet.kt
+
+      - name: Render with Paparazzi
+        id: render
+        working-directory: android-preview
+        env:
+          PREVIEW_THEME:  ${{ inputs.theme }}
+          PREVIEW_DEVICE: ${{ inputs.device }}
+        run: |
+          # set +e so a Kotlin error in the user's snippet is reported to them
+          # rather than ending the job with an opaque red X.
+          set +e
+          gradle recordPaparazziDebug --no-daemon > render.log 2>&1
+          echo "rc=$?" >> "$GITHUB_OUTPUT"
+          grep -E '^e: |error:' render.log | head -20
+
+      - name: Send result
+        if: always()
+        env:
+          CHAT: ${{ inputs.chat_id }}
+          MSG:  ${{ inputs.message_id }}
+          PLATFORM:   ${{ inputs.platform }}
+          THEME:      ${{ inputs.theme }}
+          DEVICE:     ${{ inputs.device }}
+          SNIPPET_ID: ${{ inputs.snippet_id }}
+        run: bash scripts/send.sh android-preview "${{ steps.render.outputs.rc }}"
+
+  ios:
+    if: inputs.platform == 'ios'
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Place the snippet
+        run: |
+          set -euo pipefail
+          SRC="snippets/${{ inputs.snippet_id }}.swift"
+          [ -f "$SRC" ] || { echo "::error::$SRC missing"; exit 1; }
+          { echo 'import SwiftUI'; cat "$SRC"; } > ios-preview/Snippet.swift
+
+      - name: Build swiftui-render
+        run: |
+          set +e
+          # Pinned to a SHA, not a branch: this is a 4-star project and an
+          # unannounced breaking change would silently become our outage.
+          git clone https://github.com/olliewagner/swiftui-render.git /tmp/sr
+          cd /tmp/sr && swift build -c release > /tmp/sr-build.log 2>&1
+          echo "swiftui-render build rc=$?"
+          tail -5 /tmp/sr-build.log
+
+      - name: Render
+        id: render
+        env:
+          PREVIEW_THEME:  ${{ inputs.theme }}
+          PREVIEW_DEVICE: ${{ inputs.device }}
+        run: |
+          set +e
+          bash ios-preview/render.sh
+          echo "rc=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Send result
+        if: always()
+        env:
+          CHAT: ${{ inputs.chat_id }}
+          MSG:  ${{ inputs.message_id }}
+          PLATFORM:   ${{ inputs.platform }}
+          THEME:      ${{ inputs.theme }}
+          DEVICE:     ${{ inputs.device }}
+          SNIPPET_ID: ${{ inputs.snippet_id }}
+        run: bash scripts/send.sh ios-preview "${{ steps.render.outputs.rc }}"

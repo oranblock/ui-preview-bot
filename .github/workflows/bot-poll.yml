@@ -1,0 +1,50 @@
+name: Bot poll
+
+# The bot, such as it is. No server, so a cron job asks Telegram what happened
+# and the repo stores the answer.
+#
+# GitHub's minimum cron is 5 minutes and scheduled runs are delayed under load,
+# so replies land in 5-20 minutes. Dispatch this manually when you want it now.
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+concurrency:
+  # Two polls at once would both read the same offset and answer the same
+  # message twice. Never cancel-in-progress: a cancelled poll loses the offset
+  # write and replays everything.
+  group: bot-poll
+  cancel-in-progress: false
+
+permissions:
+  contents: write     # commit the offset and snippets
+  actions: write      # dispatch render.yml
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Poll and dispatch
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+          GH_TOKEN:           ${{ github.token }}
+        run: python3 bot/poll.py
+
+      - name: Persist offset and snippets
+        run: |
+          set -euo pipefail
+          git config user.name  "ui-preview-bot"
+          git config user.email "bot@users.noreply.github.com"
+          git add bot/state snippets
+          # Nothing arrived is the common case, and `git commit` exits 1 on an
+          # empty index, which would fail the step every five minutes.
+          git diff --cached --quiet && { echo "no new state"; exit 0; }
+          git commit -m "bot: offset + snippets [skip ci]"
+          # Another poll may have pushed while this one ran.
+          git pull --rebase --autostash origin "${GITHUB_REF_NAME}"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
