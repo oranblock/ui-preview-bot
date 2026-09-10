@@ -1,34 +1,53 @@
 name: Render snippet
 
-# Renders one stored snippet and sends the PNG to Telegram.
+# Renders one snippet and sends the PNG to Telegram.
 #
-# Two jobs because the two platforms cannot share a runner: Compose renders on
-# the JVM via LayoutLib and runs on free Linux, while SwiftUI has no Linux
-# implementation at all and needs macOS. Each job gates itself on `platform`, so
-# exactly one runs per dispatch.
+# Triggered by the Cloudflare Worker via repository_dispatch when a message or a
+# button tap arrives, and by hand for self-tests.
+#
+# Two jobs because the platforms cannot share a runner: Compose renders on the
+# JVM through LayoutLib and runs on free Linux, while SwiftUI has no Linux
+# implementation and needs macOS. Each job gates on `platform`, so one runs.
 on:
+  repository_dispatch:
+    types: [render]
   workflow_dispatch:
     inputs:
-      snippet_id: { required: true,  description: 'basename under snippets/' }
+      snippet_id: { required: true,  description: 'basename under snippets/ (self-test only)' }
       platform:   { required: true,  description: 'android | ios' }
       theme:      { required: false, default: 'dark' }
       device:     { required: false, default: 'phone' }
-      chat_id:    { required: true }
-      message_id: { required: false, default: '', description: 'edit this message in place instead of sending a new one' }
+      chat_id:    { required: false, default: '0' }
+      message_id: { required: false, default: '' }
 
 concurrency:
-  # Keyed by the snippet AND its options: tapping "dark" must not cancel the
-  # "tablet" render of the same snippet. The iOS harness made that mistake twice.
-  # platform is in the key too. Without it, dispatching the iOS render of a
-  # snippet CANCELS the Android render of the same snippet — which is precisely
-  # the mistake the harness repos made twice, made a third time here, and caught
-  # only because both runs were dispatched twenty seconds apart.
-  group: render-${{ inputs.platform }}-${{ inputs.snippet_id }}-${{ inputs.theme }}-${{ inputs.device }}
+  # platform is in the key. Without it, the iOS render of a snippet cancels the
+  # Android render of the same snippet — which happened here on day one, and in
+  # both harness repos before that.
+  group: >-
+    render-${{ github.event.client_payload.platform   || inputs.platform }}-${{
+                github.event.client_payload.snippet_id || inputs.snippet_id }}-${{
+                github.event.client_payload.theme      || inputs.theme }}-${{
+                github.event.client_payload.device     || inputs.device }}
   cancel-in-progress: true
+
+env:
+  PLATFORM:   ${{ github.event.client_payload.platform   || inputs.platform }}
+  THEME:      ${{ github.event.client_payload.theme      || inputs.theme    || 'dark' }}
+  DEVICE:     ${{ github.event.client_payload.device     || inputs.device   || 'phone' }}
+  SNIPPET_ID: ${{ github.event.client_payload.snippet_id || inputs.snippet_id }}
+  CHAT:       ${{ github.event.client_payload.chat_id    || inputs.chat_id }}
+  MSG:        ${{ github.event.client_payload.message_id || inputs.message_id }}
+  # The snippet is arbitrary user-supplied source. It reaches the runner ONLY as
+  # an environment variable and is written out with printf. Interpolating it
+  # into a `run:` block with ${{ }} would let anyone who can message the bot run
+  # commands on the runner — the code is pasted verbatim into the script before
+  # bash ever sees it, so quoting cannot save you.
+  CODE:       ${{ github.event.client_payload.code }}
 
 jobs:
   android:
-    if: inputs.platform == 'android'
+    if: (github.event.client_payload.platform || inputs.platform) == 'android'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
@@ -41,27 +60,31 @@ jobs:
       - name: Place the snippet
         run: |
           set -euo pipefail
-          SRC="snippets/${{ inputs.snippet_id }}.kt"
-          [ -f "$SRC" ] || { echo "::error::$SRC missing"; exit 1; }
-          # The scaffold expects exactly one @Composable named Preview.
+          if [ -n "${CODE:-}" ]; then
+            printf '%s\n' "$CODE" > /tmp/snippet.kt
+          else
+            cp "snippets/${SNIPPET_ID}.kt" /tmp/snippet.kt
+          fi
+          # The scaffold calls one entry point, so the imports it needs are
+          # prepended rather than demanded of whoever wrote the snippet.
           { echo 'package preview'
             echo 'import androidx.compose.runtime.Composable'
             echo 'import androidx.compose.material3.*'
             echo 'import androidx.compose.foundation.layout.*'
             echo 'import androidx.compose.ui.Modifier'
             echo 'import androidx.compose.ui.unit.dp'
-            cat "$SRC"
+            cat /tmp/snippet.kt
           } > android-preview/src/test/kotlin/Snippet.kt
 
       - name: Render with Paparazzi
         id: render
         working-directory: android-preview
         env:
-          PREVIEW_THEME:  ${{ inputs.theme }}
-          PREVIEW_DEVICE: ${{ inputs.device }}
+          PREVIEW_THEME:  ${{ env.THEME }}
+          PREVIEW_DEVICE: ${{ env.DEVICE }}
         run: |
-          # set +e so a Kotlin error in the user's snippet is reported to them
-          # rather than ending the job with an opaque red X.
+          # set +e so a Kotlin error in someone's snippet is reported back to
+          # them rather than ending the job with an opaque red X.
           set +e
           gradle recordPaparazziDebug --no-daemon > render.log 2>&1
           echo "rc=$?" >> "$GITHUB_OUTPUT"
@@ -69,17 +92,10 @@ jobs:
 
       - name: Send result
         if: always()
-        env:
-          CHAT: ${{ inputs.chat_id == '0' && secrets.TELEGRAM_CHAT_ID || inputs.chat_id }}
-          MSG:  ${{ inputs.message_id }}
-          PLATFORM:   ${{ inputs.platform }}
-          THEME:      ${{ inputs.theme }}
-          DEVICE:     ${{ inputs.device }}
-          SNIPPET_ID: ${{ inputs.snippet_id }}
         run: bash scripts/send.sh android-preview "${{ steps.render.outputs.rc }}"
 
   ios:
-    if: inputs.platform == 'ios'
+    if: (github.event.client_payload.platform || inputs.platform) == 'ios'
     runs-on: macos-15
     timeout-minutes: 30
     env:
@@ -90,16 +106,17 @@ jobs:
       - name: Place the snippet
         run: |
           set -euo pipefail
-          SRC="snippets/${{ inputs.snippet_id }}.swift"
-          [ -f "$SRC" ] || { echo "::error::$SRC missing"; exit 1; }
-          { echo 'import SwiftUI'; cat "$SRC"; } > ios-preview/Snippet.swift
+          if [ -n "${CODE:-}" ]; then
+            printf '%s\n' "$CODE" > /tmp/snippet.swift
+          else
+            cp "snippets/${SNIPPET_ID}.swift" /tmp/snippet.swift
+          fi
+          { echo 'import SwiftUI'; cat /tmp/snippet.swift; } > ios-preview/Snippet.swift
 
       - name: Build swiftui-render
         run: |
           set +e
-          # Pinned to a SHA, not a branch: this is a 4-star project and an
-          # unannounced breaking change would silently become our outage.
-          git clone https://github.com/olliewagner/swiftui-render.git /tmp/sr
+          git clone --depth 1 https://github.com/olliewagner/swiftui-render.git /tmp/sr
           cd /tmp/sr && swift build -c release > /tmp/sr-build.log 2>&1
           echo "swiftui-render build rc=$?"
           tail -5 /tmp/sr-build.log
@@ -107,8 +124,8 @@ jobs:
       - name: Render
         id: render
         env:
-          PREVIEW_THEME:  ${{ inputs.theme }}
-          PREVIEW_DEVICE: ${{ inputs.device }}
+          PREVIEW_THEME:  ${{ env.THEME }}
+          PREVIEW_DEVICE: ${{ env.DEVICE }}
         run: |
           set +e
           bash ios-preview/render.sh
@@ -116,11 +133,4 @@ jobs:
 
       - name: Send result
         if: always()
-        env:
-          CHAT: ${{ inputs.chat_id == '0' && secrets.TELEGRAM_CHAT_ID || inputs.chat_id }}
-          MSG:  ${{ inputs.message_id }}
-          PLATFORM:   ${{ inputs.platform }}
-          THEME:      ${{ inputs.theme }}
-          DEVICE:     ${{ inputs.device }}
-          SNIPPET_ID: ${{ inputs.snippet_id }}
         run: bash scripts/send.sh ios-preview "${{ steps.render.outputs.rc }}"

@@ -3,19 +3,21 @@
 Send a SwiftUI or Jetpack Compose snippet to a Telegram bot, get a rendered
 picture back with buttons to flip light/dark and phone/tablet.
 
-**There is no server.** GitHub Actions cannot receive a webhook, so a cron job
-polls Telegram and the repository is the database: the update offset lives in
-`bot/state/offset.txt`, snippets in `snippets/`, both committed back by the
-workflow. Nothing to host, nothing to pay for, nothing to keep alive.
+A Cloudflare Worker receives the Telegram webhook and fires a
+`repository_dispatch`; GitHub Actions draws the picture. Nothing runs idle and
+there is no instance to keep alive.
 
-The price is latency. GitHub's shortest cron is five minutes and scheduled runs
-are delayed under load, so a reply lands in **5 to 20 minutes**. If that is too
-slow, the same code runs as a long-polling process anywhere always-on and
-replies instantly; only `bot-poll.yml` becomes a `while true` loop.
+**This started as a cron job and that design failed.** A scheduled poll cannot
+answer a callback query: Telegram expires one within seconds, a cron answers
+minutes later, so every button tap kept its spinner and looked dead. Worse, the
+schedule on a new repo did not fire at all for the first half hour, so replies
+only happened when someone dispatched a poll by hand. The webhook removes both
+problems rather than working around them.
 
 ```
-bot/poll.py                 the whole bot: classify, store, dispatch, reply
-.github/workflows/bot-poll.yml   cron every 5 min
+worker/src/worker.js        webhook: classify, ack the tap, dispatch to Actions
+worker/wrangler.toml        KV binding and vars; secrets are set by wrangler
+worker/setup.sh             the five setup commands, in order
 .github/workflows/render.yml     one job per platform, gated on `platform`
 android-preview/            Paparazzi scaffold — Compose on the JVM, no emulator
 ios-preview/render.sh       swiftui-render, falling back to ImageRenderer
@@ -51,17 +53,13 @@ exotic views survive the fallback; nothing outside this repo can break it.
 | emulator or simulator | none | none |
 | typical render | seconds | tens of seconds plus a toolchain build |
 
-## The buttons never light up, and still work
+## Why the snippet never touches a `run:` block
 
-Telegram expires a callback query seconds after the tap. This bot answers on a
-cron minutes later, so `answerCallbackQuery` always fails with "query is too old"
-and the button keeps its loading spinner until the client gives up. There is no
-fix inside a serverless design; only an always-on process can acknowledge in
-time.
-
-The re-render itself is unaffected. Tap once, wait for the poll, and the photo is
-replaced in place via `editMessageMedia`. Tapping repeatedly queues one render
-per tap, so tap once.
+The snippet is arbitrary source from whoever messaged the bot. It reaches the
+runner as an environment variable and is written out with `printf`, never
+interpolated with `${{ }}`. GitHub pastes an expression into the script verbatim
+before bash sees it, so a snippet containing a quote and a semicolon would run
+commands on the runner and no amount of quoting would stop it.
 
 ## What a snippet must look like
 
@@ -83,21 +81,33 @@ Anything else your snippet needs, import it yourself.
 
 ## Setup
 
-Three secrets, set once:
+One secret on the repo, for sending the finished picture:
 
 ```
-gh secret set TELEGRAM_BOT_TOKEN --repo <owner>/<repo>
-gh secret set TELEGRAM_CHAT_ID   --repo <owner>/<repo>   # comma-separated allowlist
+gh secret set TELEGRAM_BOT_TOKEN --repo oranblock/ui-preview-bot
 ```
 
-`TELEGRAM_CHAT_ID` is an **allowlist, not a destination**. This repo is public
-and the bot answers whoever finds it, so every chat permitted to use it must be
-named. A bot cannot start a conversation, so message it `/start` once or every
+Then the Worker — `worker/setup.sh` prints the five commands in order. It needs
+its own copy of the bot token, a **fine-grained** GitHub token scoped to
+`Actions: read and write` on this repo alone, and a random `WEBHOOK_SECRET`
+which Telegram echoes back on every delivery so the public URL cannot be
+spoofed.
+
+`ALLOWED_CHAT_IDS` in `wrangler.toml` is an **allowlist**. The webhook URL is
+public and the bot answers whoever reaches it, so name every chat permitted to
+use it. A bot cannot start a conversation, so message it `/start` once or every
 send fails 403.
+
+Setting the webhook **disables `getUpdates`** — Telegram allows one or the
+other, never both. `getWebhookInfo` shows `last_error_message`, which is the
+first thing to read when nothing arrives.
 
 ## Status
 
-Scaffolded, not yet proven end to end. Both renderers need the same CI iteration
-the harness repos needed — expect the first few runs to fail on toolchain
-versions rather than on logic. `render.yml` reports the compiler's own error
-back into the chat, so those rounds are readable rather than silent.
+Both renderers are proven end to end: a Compose render and a SwiftUI render were
+built and delivered to Telegram with working buttons. `swiftui-render` has
+already fallen back to `ImageRenderer` once in normal use, which is why the
+fallback is there.
+
+The Worker is written but not yet deployed, so the webhook path is unproven.
+Until it is deployed, nothing reaches the bot at all.

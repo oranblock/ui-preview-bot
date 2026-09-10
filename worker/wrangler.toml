@@ -1,0 +1,21 @@
+name = "ui-preview-bot"
+main = "src/worker.js"
+compatibility_date = "2026-01-01"
+
+# Snippets live here because callback_data is capped at 64 bytes and cannot
+# carry source. Create it once:
+#   npx wrangler kv namespace create SNIPPETS
+# then paste the id below.
+[[kv_namespaces]]
+binding = "SNIPPETS"
+id = "PASTE_KV_NAMESPACE_ID"
+
+[vars]
+GITHUB_REPO = "oranblock/ui-preview-bot"
+# Allowlist. The webhook URL is public, and the bot answers whoever reaches it.
+ALLOWED_CHAT_IDS = ""
+
+# Secrets are NOT set here. They go in via:
+#   npx wrangler secret put TELEGRAM_BOT_TOKEN
+#   npx wrangler secret put GITHUB_TOKEN      # fine-grained, actions:write, this repo only
+#   npx wrangler secret put WEBHOOK_SECRET    # any random string
