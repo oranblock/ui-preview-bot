@@ -17,7 +17,17 @@ android {
     kotlinOptions { jvmTarget = "17" }
     sourceSets["test"].java.srcDir("src/test/kotlin")
     // Robolectric needs the real Android resources, unlike Paparazzi's LayoutLib.
-    testOptions { unitTests { isIncludeAndroidResources = true } }
+    testOptions {
+        unitTests {
+            isIncludeAndroidResources = true
+            all {
+                // Belt and braces with @GraphicsMode: without native graphics
+                // Robolectric draws nothing at all and every capture is blank.
+                it.systemProperty("robolectric.graphicsMode", "NATIVE")
+                it.systemProperty("robolectric.pixelCopyRenderMode", "hardware")
+            }
+        }
+    }
 }
 
 dependencies {

@@ -17,6 +17,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 import java.io.File
@@ -41,7 +42,11 @@ import java.io.File
  */
 @RunWith(RobolectricTestRunner::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
-@Config(qualifiers = "w411dp-h891dp-xhdpi")
+// sdk is pinned. Robolectric picks a default from the manifest, and NATIVE
+// graphics only draw on a recent one — on the wrong sdk the composition still
+// lays out and reports its semantics while rendering nothing, which is exactly
+// what a blank png with a correctly-detected button list looks like.
+@Config(sdk = [34], qualifiers = "w411dp-h891dp-xhdpi")
 class PreviewTest {
 
     @get:Rule
@@ -50,6 +55,12 @@ class PreviewTest {
     @Test
     fun render() {
         val dark = System.getenv("PREVIEW_THEME") != "light"
+
+        // The device switch has to happen before the first composition, and
+        // qualifiers in @Config are compile-time constants, so set it here.
+        if (System.getenv("PREVIEW_DEVICE") == "tablet") {
+            RuntimeEnvironment.setQualifiers("+w800dp-h1280dp-xhdpi")
+        }
 
         rule.setContent {
             MaterialTheme(colorScheme = if (dark) darkColorScheme() else lightColorScheme()) {
@@ -78,6 +89,9 @@ class PreviewTest {
             .writeText(labels.joinToString("\n"))
         println("clickable: ${labels.size} -> $labels")
 
+        // Compose settles asynchronously; capturing before it does yields the
+        // empty frame.
+        rule.waitForIdle()
         rule.onRoot().captureRoboImage("build/preview.png")
     }
 }
