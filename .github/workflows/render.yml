@@ -96,7 +96,10 @@ jobs:
           # set +e so a Kotlin error in someone's snippet is reported back to
           # them rather than ending the job with an opaque red X.
           set +e
-          gradle testDebugUnitTest --no-daemon > render.log 2>&1
+          # recordRoborazziDebug, not testDebugUnitTest. captureRoboImage is a
+          # NO-OP unless record mode is on, so the plain test task passed, wrote
+          # buttons.txt, and produced no picture at all.
+          gradle recordRoborazziDebug --no-daemon > render.log 2>&1
           echo "rc=$?" >> "$GITHUB_OUTPUT"
           grep -E '^e: |error:' render.log | head -20
 
