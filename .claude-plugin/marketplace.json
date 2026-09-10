@@ -1,0 +1,13 @@
+{
+  "name": "ui-preview-bot",
+  "owner": {
+    "name": "oranblock"
+  },
+  "plugins": [
+    {
+      "name": "ui-preview-bot",
+      "source": "./",
+      "description": "Render SwiftUI and Jetpack Compose snippets to images from a Telegram bot, with no server — a Cloudflare Worker takes the webhook and GitHub Actions draws the picture. Use when asked to preview UI code as an image, build a Telegram bot backed by GitHub Actions, render Compose without an emulator, render SwiftUI without Xcode, or wire a webhook to a repository_dispatch. Repo: oranblock/ui-preview-bot."
+    }
+  ]
+}

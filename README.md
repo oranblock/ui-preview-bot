@@ -104,12 +104,43 @@ Setting the webhook **disables `getUpdates`** — Telegram allows one or the
 other, never both. `getWebhookInfo` shows `last_error_message`, which is the
 first thing to read when nothing arrives.
 
+## Install as a Claude Code plugin
+
+This repo is also a Claude Code plugin. The `ui-preview-bot` skill carries the
+failures behind every decision here, so they are not rediscovered.
+
+```
+/plugin marketplace add oranblock/ui-preview-bot
+/plugin install ui-preview-bot@ui-preview-bot
+```
+
 ## Status
 
-Both renderers are proven end to end: a Compose render and a SwiftUI render were
-built and delivered to Telegram with working buttons. `swiftui-render` has
-already fallen back to `ImageRenderer` once in normal use, which is why the
-fallback is there.
+Working end to end, deployed and verified:
 
-The Worker is written but not yet deployed, so the webhook path is unproven.
-Until it is deployed, nothing reaches the bot at all.
+| stage | |
+| :--- | :--- |
+| Telegram to Worker | authenticated by `secret_token` |
+| Worker to `repository_dispatch` | needs Contents write on the token |
+| Compose via Paparazzi | ~2.5 min cold, no emulator |
+| SwiftUI via swiftui-render | ~1 min, fallback already used once in normal use |
+| photo sent, replaced in place on a tap | `sendPhoto` / `editMessageMedia` |
+
+Taps are acknowledged immediately; the render behind them takes as long as the
+table says, which reads as "nothing happened" for a couple of minutes.
+
+## What went wrong getting here
+
+Kept because each cost a round and none was visible where anyone was looking.
+
+- **Cron cannot answer a callback query.** It expires in seconds. The whole
+  poll-based design died on this, and the expired ack was aborting the re-render
+  on top of it.
+- **`repository_dispatch` needs `Contents: read and write`**, not Actions.
+  GitHub's 403 names no permission, so the bot just ignored every message.
+- **`curl -o /dev/null` hid `ok:false`.** Telegram returns **200** with
+  `{"ok":false,"description":"chat not found"}`; two green runs delivered nothing.
+- **Cloudflare 1010 is not your Worker's 403.** A Python client was blocked at
+  the edge; curl with a normal user-agent passed. Misread as a secret mismatch.
+- **A `console.log` nobody tails is not a log.** Handler failures now go to the
+  chat.
