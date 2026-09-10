@@ -56,7 +56,13 @@ fi
 # at them is the whole point — unlike the harness repos, where the source is
 # private and only counts may be published.
 LOG=$(find "$DIR" /tmp -maxdepth 2 -name '*render*.log' -o -maxdepth 2 -name 'sr-build.log' 2>/dev/null | head -1)
+
+# Compiler errors first, then Gradle's own failure section. The tail is the LAST
+# resort: a Gradle log ends in task noise, so tailing it reported ":processDebug
+# UnitTestJavaRes" as though that were the problem.
 ERR=$(grep -E '^e: |error:|Error:' "$LOG" 2>/dev/null | head -12)
+[ -n "$ERR" ] || ERR=$(sed -n '/What went wrong/,/^\* Try:/p' "$LOG" 2>/dev/null | head -14)
+[ -n "$ERR" ] || ERR=$(grep -E 'FAILED|Exception|Caused by' "$LOG" 2>/dev/null | head -12)
 [ -n "$ERR" ] || ERR=$(tail -12 "$LOG" 2>/dev/null)
 [ -n "$ERR" ] || ERR="render failed with rc=${RC} and produced no log"
 

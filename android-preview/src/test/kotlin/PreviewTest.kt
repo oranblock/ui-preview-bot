@@ -85,8 +85,9 @@ class PreviewTest {
                 ?: n.config.getOrNull(SemanticsProperties.ContentDescription)?.joinToString(" ")?.take(24)
                 ?: "button"
         }
-        File("build/buttons.txt").apply { parentFile.mkdirs() }
-            .writeText(labels.joinToString("\n"))
+        val out = File("build/buttons.txt")
+        out.parentFile?.mkdirs()
+        out.writeText(labels.joinToString("\n"))
         println("clickable: ${labels.size} -> $labels")
 
         // Compose settles asynchronously; capturing before it does yields the

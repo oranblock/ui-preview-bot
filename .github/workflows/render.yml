@@ -119,7 +119,10 @@ jobs:
           retention-days: 7
 
       - name: Send result
-        if: always()
+        # NOT always(): that includes cancelled. Concurrency supersedes a run on
+        # every rapid tap, and those were reporting a red X with a tail of
+        # Gradle noise for work that was deliberately abandoned.
+        if: success() || failure()
         run: bash scripts/send.sh android-preview "${{ steps.render.outputs.rc }}"
 
   ios:
@@ -180,5 +183,8 @@ jobs:
           retention-days: 7
 
       - name: Send result
-        if: always()
+        # NOT always(): that includes cancelled. Concurrency supersedes a run on
+        # every rapid tap, and those were reporting a red X with a tail of
+        # Gradle noise for work that was deliberately abandoned.
+        if: success() || failure()
         run: bash scripts/send.sh ios-preview "${{ steps.render.outputs.rc }}"
