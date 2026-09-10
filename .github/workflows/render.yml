@@ -19,7 +19,11 @@ on:
 concurrency:
   # Keyed by the snippet AND its options: tapping "dark" must not cancel the
   # "tablet" render of the same snippet. The iOS harness made that mistake twice.
-  group: render-${{ inputs.snippet_id }}-${{ inputs.theme }}-${{ inputs.device }}
+  # platform is in the key too. Without it, dispatching the iOS render of a
+  # snippet CANCELS the Android render of the same snippet — which is precisely
+  # the mistake the harness repos made twice, made a third time here, and caught
+  # only because both runs were dispatched twenty seconds apart.
+  group: render-${{ inputs.platform }}-${{ inputs.snippet_id }}-${{ inputs.theme }}-${{ inputs.device }}
   cancel-in-progress: true
 
 jobs:
