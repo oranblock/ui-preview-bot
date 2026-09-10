@@ -131,6 +131,34 @@ if not entry:
 
 print(f"entry point: {entry}() in {os.path.basename(entry_file)}", file=sys.stderr)
 
+KOTLIN_HEADER = [
+    "package preview",
+    "import androidx.compose.runtime.Composable",
+    "import androidx.compose.material3.*",
+    "import androidx.compose.foundation.layout.*",
+    "import androidx.compose.ui.Modifier",
+    "import androidx.compose.ui.unit.dp",
+]
+
+
+def dress(text):
+    """Give a bare snippet a package and the usual Compose imports.
+
+    A pasted snippet has neither, and the multi-file rewrite dropped the step
+    that added them — every reference in it then failed to resolve, which reads
+    like the snippet is broken when it is the scaffold that is.
+
+    A file that already declares a package is someone's real source: leave it
+    alone entirely.
+    """
+    if re.search(r'(?m)^\s*package\s+[\w.]+\s*$', text):
+        return text
+    have = set(re.findall(r'(?m)^\s*import\s+([\w.*]+)', text))
+    head = [h for h in KOTLIN_HEADER
+            if not h.startswith("import") or h.split()[1] not in have]
+    return "\n".join(head) + "\n\n" + text
+
+
 # Copy every file through, flattened. Names can collide across directories in a
 # zip, so keep the first and warn rather than silently overwriting one.
 seen = {}
@@ -140,7 +168,10 @@ for f in files:
         print(f"ignoring duplicate {base}", file=sys.stderr)
         continue
     seen[base] = f
-    shutil.copy(f, os.path.join(out, base))
+    body = texts[f]
+    if platform == "android":
+        body = dress(body)
+    open(os.path.join(out, base), "w", encoding="utf-8").write(body)
 
 if platform == "android":
     pkg = None
