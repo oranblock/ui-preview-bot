@@ -81,15 +81,29 @@ async function dispatch(env, payload) {
 
 function allowed(env, chat) {
   const list = (env.ALLOWED_CHAT_IDS || "").split(",").map(s => s.trim()).filter(Boolean);
-  return list.length === 0 || list.includes(String(chat));
+  const ok = list.length === 0 || list.includes(String(chat));
+  // Log the rejection. A silent allowlist is indistinguishable from a broken
+  // bot: uploads arrived, the Worker answered 200, and nothing else happened
+  // anywhere, because the chat sending them was not the chat configured.
+  if (!ok) console.log(`chat ${chat} not in ALLOWED_CHAT_IDS (${list.join(",") || "empty"})`);
+  return ok;
 }
 
 /** Pull an uploaded .kt/.swift file down from Telegram.
  *  A real file beats a pasted snippet: no reformatting by the client, no lost
  *  indentation, and the filename settles the language before any regex does. */
+function b64(buf) {
+  let s = "";
+  const b = new Uint8Array(buf);
+  for (let i = 0; i < b.length; i += 0x8000) {
+    s += String.fromCharCode.apply(null, b.subarray(i, i + 0x8000));
+  }
+  return btoa(s);
+}
+
 async function fetchDocument(env, doc) {
   const name = doc.file_name || "";
-  if (!/\.(kt|kts|swift)$/i.test(name)) return null;
+  if (!/\.(kt|kts|swift|zip)$/i.test(name)) return null;
   // 20 MB is the bot API's download ceiling; a source file nowhere near it that
   // is still large is almost certainly not a view worth rendering.
   if (doc.file_size && doc.file_size > 512 * 1024) {
@@ -100,6 +114,22 @@ async function fetchDocument(env, doc) {
   const r = await fetch(
     `https://api.telegram.org/file/bot${env.TELEGRAM_BOT_TOKEN}/${info.result.file_path}`);
   if (!r.ok) throw new Error(`download ${r.status}`);
+
+  if (/\.zip$/i.test(name)) {
+    // A zip travels base64 inside client_payload. GitHub caps that payload, so
+    // reject early with a number rather than letting the dispatch fail with an
+    // error about JSON that explains nothing.
+    const encoded = b64(await r.arrayBuffer());
+    if (encoded.length > 55000) {
+      throw new Error(`${name} is too large once encoded (${Math.round(encoded.length / 1024)} KB of ` +
+                      `a ~54 KB budget) — send only the view and the files it needs`);
+    }
+    // The language cannot come from the filename here, so look inside: the
+    // manifest of names is enough and costs nothing.
+    const names = info.result.file_path;
+    return { name, zip: encoded, platform: null, needsSniff: true };
+  }
+
   return { name, code: await r.text(),
            platform: /\.swift$/i.test(name) ? "ios" : "android" };
 }
@@ -112,9 +142,25 @@ async function onMessage(env, msg) {
     const f = await fetchDocument(env, msg.document);
     if (!f) {
       await tg(env, "sendMessage", { chat_id: chat,
-        text: `I render .kt and .swift files. ${msg.document.file_name || "that"} is neither.` });
+        text: `I render .kt, .swift and .zip files. ${msg.document.file_name || "that"} is none of those.` });
       return;
     }
+
+    if (f.zip) {
+      // Which language a zip holds is decided by the workflow, which can see
+      // the extracted names. Both jobs cannot run, so guess here and let the
+      // caption say so: a zip named *.swift.zip or holding swift wins ios.
+      const platform = /swift|ios/i.test(f.name) ? "ios" : "android";
+      const id = await sha10(f.zip);
+      await env.SNIPPETS.put(id, f.zip, { metadata: { platform, zip: true } });
+      await tg(env, "sendMessage", { chat_id: chat,
+        text: `queued ${platform} render · ${f.name} · ${id}\n` +
+              `(a zip is read as ${platform}; name it *-ios.zip or *-android.zip to be sure)` });
+      await dispatch(env, { platform, theme: "dark", device: "phone",
+                            chat_id: String(chat), snippet_id: id, zip_b64: f.zip });
+      return;
+    }
+
     const id = await sha10(f.code);
     await env.SNIPPETS.put(id, f.code, { metadata: { platform: f.platform } });
     await tg(env, "sendMessage", { chat_id: chat,
@@ -165,11 +211,15 @@ async function onCallback(env, cb) {
     await tg(env, "sendMessage", { chat_id: chat, text: `snippet ${id} has expired — send it again` });
     return;
   }
+  // A zip was stored base64; a snippet was stored as text. Send it back on the
+  // field the workflow expects, or a re-render silently loses every file but one.
+  const isZip = /^[A-Za-z0-9+/=\s]+$/.test(code) && code.startsWith("UEsD");
   await dispatch(env, {
     platform: p === "a" ? "android" : "ios",
     theme, device, chat_id: String(chat),
     message_id: String(cb.message.message_id),
-    snippet_id: id, code,
+    snippet_id: id,
+    ...(isZip ? { zip_b64: code } : { code }),
   });
 }
 
@@ -186,6 +236,12 @@ export default {
 
     let update;
     try { update = await req.json(); } catch { return new Response("bad json", { status: 400 }); }
+
+    // One line per update, so "nothing happened" always has a record.
+    const c = update.message?.chat, d = update.message?.document;
+    console.log("update", update.update_id,
+      c ? `chat=${c.id} type=${c.type}` : "callback",
+      d ? `doc=${d.file_name}` : (update.message?.text ? "text" : ""));
 
     try {
       if (update.message) await onMessage(env, update.message);

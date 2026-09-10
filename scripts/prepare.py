@@ -1,97 +1,166 @@
 #!/usr/bin/env python3
-"""Turn a real source file into something the render scaffold can call.
+"""Turn a source file, or a zip of them, into something the scaffold can call.
 
-A pasted snippet can be told to define `Preview()`. A real file cannot: it
-arrives with its own package line, its own imports, and several composables or
-views named whatever the author wanted. So find the entry point instead of
-demanding one.
+  prepare.py <file|dir> <out_dir> <android|ios>
 
-Usage: prepare.py <in> <out> <android|ios>
+A pasted snippet can be told to define Preview(). A real file cannot: it arrives
+with its own package line, its own imports, and several composables or views
+named whatever the author chose. So find the entry point instead of demanding
+one, and when several files arrive, find which of them holds it.
+
+Helper files keep their own package declaration and are compiled alongside. Only
+a small generated shim lives in the scaffold's package and calls across.
 """
-import re, sys
+import os, re, shutil, sys
 
-src = open(sys.argv[1], encoding="utf-8", errors="replace").read()
-out, platform = sys.argv[2], sys.argv[3]
+src, out, platform = sys.argv[1], sys.argv[2], sys.argv[3]
+os.makedirs(out, exist_ok=True)
 
-
-def kotlin(s):
-    # The scaffold owns the package. A file's own declaration would either
-    # conflict or put Preview() somewhere the test cannot see it.
-    s = re.sub(r'(?m)^\s*package\s+[\w.]+\s*$', '', s)
-
-    header = [
-        "package preview",
-        "import androidx.compose.runtime.Composable",
-        "import androidx.compose.material3.*",
-        "import androidx.compose.foundation.layout.*",
-        "import androidx.compose.ui.Modifier",
-        "import androidx.compose.ui.unit.dp",
-    ]
-    # Kotlin tolerates a duplicate import but not a duplicate *wildcard* clash,
-    # and re-importing what the file already imports is noise either way.
-    existing = set(re.findall(r'(?m)^\s*import\s+([\w.*]+)', s))
-    header = [h for h in header
-              if not h.startswith("import") or h.split()[1] not in existing]
-
-    if re.search(r'(?m)^\s*(?:@Composable\s+)?(?:private\s+|internal\s+)?fun\s+Preview\s*\(\s*\)', s):
-        return "\n".join(header) + "\n" + s
-
-    # Prefer something the author already marked as a preview, then any
-    # zero-argument composable. A composable with parameters cannot be called
-    # without inventing values for them, so it is skipped rather than guessed at.
-    marked = re.search(
-        r'@Preview[^\n]*\n(?:@[\w.]+[^\n]*\n)*\s*(?:private\s+|internal\s+)?fun\s+(\w+)\s*\(\s*\)', s)
-    any_c = re.search(
-        r'@Composable[^\n]*\n(?:@[\w.]+[^\n]*\n)*\s*(?:private\s+|internal\s+)?fun\s+(\w+)\s*\(\s*\)', s)
-    hit = marked or any_c
-    if not hit:
-        sys.exit("no zero-argument @Composable found — the file needs one to render")
-    name = hit.group(1)
-    print(f"entry point: {name}()", file=sys.stderr)
-    return "\n".join(header) + "\n" + s + f"\n\n@Composable\nfun Preview() {{ {name}() }}\n"
+EXT = ".kt" if platform == "android" else ".swift"
 
 
-def swift(s):
-    header = "import SwiftUI\n" if not re.search(r'(?m)^\s*import\s+SwiftUI', s) else ""
-    if re.search(r'(?m)^\s*(?:public\s+)?struct\s+Preview\s*:\s*View', s):
-        return header + s
+def collect(path):
+    """Every source file, entry candidates first is not assumed — order is
+    stable so the same zip always picks the same entry point."""
+    if os.path.isfile(path):
+        return [path]
+    hits = []
+    for root, dirs, files in os.walk(path):
+        # A zip from a Mac or an IDE carries junk that will not compile.
+        dirs[:] = [d for d in dirs if d not in ("__MACOSX", ".git", "build", ".gradle")]
+        for f in sorted(files):
+            if f.endswith(EXT) and not f.startswith("._"):
+                hits.append(os.path.join(root, f))
+    return sorted(hits)
 
-    # A View whose stored properties all have defaults can be built as `X()`.
-    # One without cannot, and guessing an argument list produces a compiler
-    # error that reads like the file is broken when it is only uninstantiable.
-    for m in re.finditer(r'(?m)^\s*(?:public\s+)?struct\s+(\w+)\s*:\s*(?:[\w\s,]*\b)?View\b', s):
-        name = m.group(1)
-        body = s[m.end():]
+
+def kotlin_entry(text):
+    """Preview() if present, else the @Preview-marked composable, else the
+    first zero-argument one. A composable with parameters cannot be called
+    without inventing values, so it is skipped rather than guessed at."""
+    if re.search(r'(?m)^\s*(?:@Composable\s+)?(?:private\s+|internal\s+)?fun\s+Preview\s*\(\s*\)', text):
+        return "Preview"
+    for pat in (r'@Preview[^\n]*\n(?:@[\w.]+[^\n]*\n)*\s*(?:private\s+|internal\s+)?fun\s+(\w+)\s*\(\s*\)',
+                r'@Composable[^\n]*\n(?:@[\w.]+[^\n]*\n)*\s*(?:private\s+|internal\s+)?fun\s+(\w+)\s*\(\s*\)'):
+        m = re.search(pat, text)
+        if m:
+            return m.group(1)
+    return None
+
+
+def swift_entry(text):
+    """The first View constructible with no arguments.
+
+    What does NOT block `X()`, learned by rejecting every real view twice:
+      @State / @Environment / @AppStorage — a property wrapper brings storage
+      var body: some View {  — computed, not stored
+      = something            — has a default
+      var x: String?         — an optional var defaults to nil
+    Only a bare, non-optional, unwrapped stored property does.
+    """
+    if re.search(r'(?m)^\s*(?:public\s+)?struct\s+Preview\s*:\s*View', text):
+        return "Preview"
+    for m in re.finditer(r'(?m)^\s*(?:public\s+)?struct\s+(\w+)\s*:\s*(?:[\w\s,]*\b)?View\b', text):
+        name, body = m.group(1), text[m.end():]
         depth, end = 0, len(body)
         for i, ch in enumerate(body):
             if ch == '{': depth += 1
             elif ch == '}':
                 depth -= 1
-                if depth == 0: end = i; break
-        decl = body[:end]
-        # What actually blocks `X()`:
-        #   @State / @Environment / @AppStorage etc. do NOT — a property
-        #     wrapper supplies its own storage and these views are built with
-        #     no arguments everywhere in real SwiftUI code.
-        #   `var body: some View {` does NOT — it is computed.
-        #   `= something` does NOT — it has a default.
-        #   `var x: String?` does NOT — an optional var defaults to nil.
-        # Only a bare, non-optional, unwrapped stored property does.
+                if depth == 0:
+                    end = i
+                    break
         needs = []
-        for line in decl.splitlines():
+        for line in body[:end].splitlines():
             t = line.strip()
             if not t or t.startswith("@") or t.startswith("//"):
                 continue
-            m = re.match(r'(?:public\s+|private\s+|fileprivate\s+|internal\s+)?'
-                         r'(?:let|var)\s+(\w+)\s*:\s*(?!some\b)([^\n={]+)$', t)
-            if m and not m.group(2).strip().endswith("?"):
-                needs.append(m.group(1))
+            mm = re.match(r'(?:public\s+|private\s+|fileprivate\s+|internal\s+)?'
+                          r'(?:let|var)\s+(\w+)\s*:\s*(?!some\b)([^\n={]+)$', t)
+            if mm and not mm.group(2).strip().endswith("?"):
+                needs.append(mm.group(1))
         if needs:
             print(f"skipping {name}: needs {', '.join(needs)}", file=sys.stderr)
             continue
-        print(f"entry point: {name}()", file=sys.stderr)
-        return header + s + f"\n\nstruct Preview: View {{\n    var body: some View {{ {name}() }}\n}}\n"
-    sys.exit("no View that can be built with no arguments — add `struct Preview: View`")
+        return name
+    return None
 
 
-open(out, "w", encoding="utf-8").write(kotlin(src) if platform == "android" else swift(src))
+files = collect(src)
+if not files:
+    sys.exit(f"no {EXT} files found")
+print(f"{len(files)} source file(s)", file=sys.stderr)
+
+# Gather every candidate first, then choose. Taking the first hit picked the
+# leaf: a zip of FleetPanel + Badge yielded Badge, because B sorts before F.
+candidates = []                      # (name, file)
+texts = {}
+for f in files:
+    texts[f] = open(f, encoding="utf-8", errors="replace").read()
+    hit = kotlin_entry(texts[f]) if platform == "android" else swift_entry(texts[f])
+    if hit:
+        candidates.append((hit, f))
+
+entry = entry_file = None
+if candidates:
+    # An explicit choice always wins, so a zip whose root cannot be guessed is
+    # still renderable: send it with ENTRY=MyView.
+    want = os.environ.get("ENTRY", "").strip()
+    for name, f in candidates:
+        if name == want:
+            entry, entry_file = name, f
+            break
+
+    if not entry:
+        # Otherwise prefer a ROOT: a view nothing else calls. A leaf like a
+        # badge or a row is referenced by its parent; the screen you actually
+        # wanted to see is referenced by nobody in the zip.
+        def inbound(name, own):
+            return sum(len(re.findall(rf'\b{re.escape(name)}\s*\(', t))
+                       for f2, t in texts.items() if f2 != own)
+        roots = [(n, f) for n, f in candidates if inbound(n, f) == 0]
+        if len(candidates) > 1:
+            print("candidates: " + ", ".join(
+                f"{n}{'' if (n, f) in roots else ' (referenced)'}"
+                for n, f in candidates), file=sys.stderr)
+        entry, entry_file = (roots or candidates)[0]
+
+if not entry:
+    sys.exit("nothing renderable found — need a zero-argument @Composable, "
+             "or a View that can be built with no arguments")
+
+print(f"entry point: {entry}() in {os.path.basename(entry_file)}", file=sys.stderr)
+
+# Copy every file through, flattened. Names can collide across directories in a
+# zip, so keep the first and warn rather than silently overwriting one.
+seen = {}
+for f in files:
+    base = os.path.basename(f)
+    if base in seen:
+        print(f"ignoring duplicate {base}", file=sys.stderr)
+        continue
+    seen[base] = f
+    shutil.copy(f, os.path.join(out, base))
+
+if platform == "android":
+    pkg = None
+    m = re.search(r'(?m)^\s*package\s+([\w.]+)\s*$',
+                  open(entry_file, encoding="utf-8", errors="replace").read())
+    if m:
+        pkg = m.group(1)
+    shim = ["package preview", "import androidx.compose.runtime.Composable"]
+    if pkg and entry != "Preview":
+        # The helper keeps its own package, so reach it by name rather than
+        # rewriting someone's source.
+        shim.append(f"import {pkg}.{entry}")
+    if entry != "Preview" or pkg:
+        shim += ["", "@Composable", f"fun Preview() {{ {entry}() }}"]
+        open(os.path.join(out, "PreviewEntry.kt"), "w").write("\n".join(shim) + "\n")
+else:
+    # Swift has no per-file namespace, so everything compiled together already
+    # sees everything else. Only a shim is needed, and only if the entry point
+    # is not already called Preview.
+    if entry != "Preview":
+        open(os.path.join(out, "PreviewEntry.swift"), "w").write(
+            "import SwiftUI\n\nstruct Preview: View {\n"
+            f"    var body: some View {{ {entry}() }}\n}}\n")

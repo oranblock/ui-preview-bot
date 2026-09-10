@@ -50,6 +50,7 @@ env:
   # commands on the runner — the code is pasted verbatim into the script before
   # bash ever sees it, so quoting cannot save you.
   CODE:       ${{ github.event.client_payload.code }}
+  ZIP_B64:    ${{ github.event.client_payload.zip_b64 }}
 
 jobs:
   android:
@@ -66,15 +67,22 @@ jobs:
       - name: Place the snippet
         run: |
           set -euo pipefail
-          if [ -n "${CODE:-}" ]; then
-            printf '%s\n' "$CODE" > /tmp/snippet.kt
+          SRC=/tmp/src
+          mkdir -p "$SRC"
+          if [ -n "${ZIP_B64:-}" ]; then
+            printf '%s' "$ZIP_B64" | base64 -d > /tmp/bundle.zip
+            unzip -qo /tmp/bundle.zip -d "$SRC"
+            echo "unpacked $(find "$SRC" -name '*.kt' | wc -l) .kt file(s)"
+          elif [ -n "${CODE:-}" ]; then
+            printf '%s\n' "$CODE" > "$SRC/Snippet.kt"
           else
-            cp "snippets/${SNIPPET_ID}.kt" /tmp/snippet.kt
+            cp "snippets/${SNIPPET_ID}.kt" "$SRC/Snippet.kt"
           fi
           # Finds the entry point rather than demanding one, so a real file with
-          # its own package line and several composables works unchanged.
-          python3 scripts/prepare.py /tmp/snippet.kt \
-            android-preview/src/test/kotlin/Snippet.kt android
+          # its own package line and several composables works unchanged, and a
+          # zip of several files renders the ROOT view rather than a leaf.
+          rm -f android-preview/src/test/kotlin/Snippet.kt
+          python3 scripts/prepare.py "$SRC" android-preview/src/test/kotlin android
 
       - name: Render with Paparazzi
         id: render
@@ -106,12 +114,18 @@ jobs:
       - name: Place the snippet
         run: |
           set -euo pipefail
-          if [ -n "${CODE:-}" ]; then
-            printf '%s\n' "$CODE" > /tmp/snippet.swift
+          SRC=/tmp/src
+          mkdir -p "$SRC"
+          if [ -n "${ZIP_B64:-}" ]; then
+            printf '%s' "$ZIP_B64" | base64 -d > /tmp/bundle.zip
+            unzip -qo /tmp/bundle.zip -d "$SRC"
+            echo "unpacked $(find "$SRC" -name '*.swift' | wc -l) .swift file(s)"
+          elif [ -n "${CODE:-}" ]; then
+            printf '%s\n' "$CODE" > "$SRC/Snippet.swift"
           else
-            cp "snippets/${SNIPPET_ID}.swift" /tmp/snippet.swift
+            cp "snippets/${SNIPPET_ID}.swift" "$SRC/Snippet.swift"
           fi
-          python3 scripts/prepare.py /tmp/snippet.swift ios-preview/Snippet.swift ios
+          python3 scripts/prepare.py "$SRC" ios-preview/sources ios
 
       - name: Build swiftui-render
         run: |

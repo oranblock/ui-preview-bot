@@ -21,8 +21,14 @@ esac
 OUT="$PWD/preview.png"
 rm -f "$OUT"
 
-if [ -x /tmp/sr/.build/release/swiftui-render ]; then
-  /tmp/sr/.build/release/swiftui-render Snippet.swift \
+N=$(ls sources/*.swift 2>/dev/null | wc -l | tr -d ' ')
+echo "sources: $N file(s)" >> render.log
+
+# swiftui-render takes ONE file. A zip of several needs the compiler path, which
+# handles a whole set natively — so multi-file bundles skip the fast path
+# entirely rather than failing in a way that reads like a broken snippet.
+if [ "$N" = 1 ] && [ -x /tmp/sr/.build/release/swiftui-render ]; then
+  /tmp/sr/.build/release/swiftui-render sources/*.swift \
     --width "$W" --height "$H" --"$SCHEME" -o "$OUT" > render.log 2>&1
   [ -s "$OUT" ] && { echo "rendered via swiftui-render"; exit 0; }
   echo "swiftui-render produced nothing, falling back" >> render.log
@@ -64,7 +70,7 @@ struct Host {
 SWIFT
 
 W=$W H=$H SCHEME=$SCHEME OUT=$OUT \
-  swiftc -O -parse-as-library Snippet.swift Host.swift -o host >> render.log 2>&1 \
+  swiftc -O -parse-as-library sources/*.swift Host.swift -o host >> render.log 2>&1 \
   && W=$W H=$H SCHEME=$SCHEME OUT=$OUT ./host >> render.log 2>&1
 
 [ -s "$OUT" ] && { echo "rendered via ImageRenderer fallback"; exit 0; }
