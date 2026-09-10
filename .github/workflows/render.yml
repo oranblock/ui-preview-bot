@@ -114,6 +114,7 @@ jobs:
           path: |
             android-preview/render.log
             android-preview/build/buttons.txt
+            android-preview/build/preview.png
           if-no-files-found: warn
           retention-days: 7
 
