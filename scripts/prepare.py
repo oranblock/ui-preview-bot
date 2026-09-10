@@ -179,13 +179,21 @@ if platform == "android":
                   open(entry_file, encoding="utf-8", errors="replace").read())
     if m:
         pkg = m.group(1)
-    shim = ["package preview", "import androidx.compose.runtime.Composable"]
-    if pkg and entry != "Preview":
-        # The helper keeps its own package, so reach it by name rather than
-        # rewriting someone's source.
-        shim.append(f"import {pkg}.{entry}")
-    if entry != "Preview" or pkg:
-        shim += ["", "@Composable", f"fun Preview() {{ {entry}() }}"]
+    if pkg:
+        # The source keeps its own package, so reach it by name rather than
+        # rewriting someone's file. When their function is ALSO called Preview,
+        # importing it unaliased makes the shim call itself — infinite
+        # recursion that compiles cleanly and then blows the stack.
+        alias = "RealPreview" if entry == "Preview" else entry
+        imp = f"import {pkg}.{entry}" + (f" as {alias}" if alias != entry else "")
+        shim = ["package preview",
+                "import androidx.compose.runtime.Composable",
+                imp, "", "@Composable", f"fun Preview() {{ {alias}() }}"]
+        open(os.path.join(out, "PreviewEntry.kt"), "w").write("\n".join(shim) + "\n")
+    elif entry != "Preview":
+        shim = ["package preview",
+                "import androidx.compose.runtime.Composable",
+                "", "@Composable", f"fun Preview() {{ {entry}() }}"]
         open(os.path.join(out, "PreviewEntry.kt"), "w").write("\n".join(shim) + "\n")
 else:
     # Swift has no per-file namespace, so everything compiled together already
