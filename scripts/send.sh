@@ -10,6 +10,9 @@ set +e
 DIR="$1"; RC="${2:-1}"
 API="https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}"
 
+# TELEGRAM_CHAT_ID is an allowlist and may hold several chats; a send needs one.
+CHAT="${CHAT%%,*}"
+
 PNG=$(find "$DIR" -type f -name '*.png' -newermt '-30 minutes' | head -1)
 
 # Both buttons flip one axis and keep the other, so callback_data stays inside
@@ -32,13 +35,20 @@ if [ "$RC" = 0 ] && [ -n "$PNG" ]; then
     curl -sS -X POST "${API}/editMessageMedia" \
       -F chat_id="$CHAT" -F message_id="$MSG" \
       -F media="{\"type\":\"photo\",\"media\":\"attach://p\",\"caption\":\"${CAPTION}\"}" \
-      -F p="@${PNG}" -F reply_markup="$KB" -o /dev/null
+      -F p="@${PNG}" -F reply_markup="$KB" -o /tmp/tg.json
   else
     curl -sS -X POST "${API}/sendPhoto" \
       -F chat_id="$CHAT" -F photo="@${PNG}" \
-      -F caption="$CAPTION" -F reply_markup="$KB" -o /dev/null
+      -F caption="$CAPTION" -F reply_markup="$KB" -o /tmp/tg.json
   fi
-  echo "sent $PNG"
+  if grep -q '"ok":true' /tmp/tg.json 2>/dev/null; then
+    echo "sent $PNG"
+  else
+    # Telegram answers 200 with ok:false, so a silent -o /dev/null reported
+    # success for a chat that does not exist. Say what it actually said.
+    echo "::error::Telegram rejected the send: $(head -c 300 /tmp/tg.json)"
+    exit 1
+  fi
   exit 0
 fi
 

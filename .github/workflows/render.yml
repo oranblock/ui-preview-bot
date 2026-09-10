@@ -70,7 +70,7 @@ jobs:
       - name: Send result
         if: always()
         env:
-          CHAT: ${{ inputs.chat_id }}
+          CHAT: ${{ inputs.chat_id == '0' && secrets.TELEGRAM_CHAT_ID || inputs.chat_id }}
           MSG:  ${{ inputs.message_id }}
           PLATFORM:   ${{ inputs.platform }}
           THEME:      ${{ inputs.theme }}
@@ -117,7 +117,7 @@ jobs:
       - name: Send result
         if: always()
         env:
-          CHAT: ${{ inputs.chat_id }}
+          CHAT: ${{ inputs.chat_id == '0' && secrets.TELEGRAM_CHAT_ID || inputs.chat_id }}
           MSG:  ${{ inputs.message_id }}
           PLATFORM:   ${{ inputs.platform }}
           THEME:      ${{ inputs.theme }}
