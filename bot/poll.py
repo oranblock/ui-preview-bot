@@ -10,7 +10,7 @@ The cost is latency. GitHub's shortest cron is 5 minutes and it delays scheduled
 runs under load, so a reply can take 5-20 minutes. Nothing here can fix that; it
 is the price of having nothing to host.
 """
-import base64, hashlib, json, os, pathlib, re, subprocess, sys, urllib.parse, urllib.request
+import base64, hashlib, json, os, pathlib, re, subprocess, sys, urllib.error, urllib.parse, urllib.request
 
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 if not TOKEN:
@@ -35,8 +35,16 @@ def tg(method, **params):
     data = urllib.parse.urlencode(
         {k: (json.dumps(v) if isinstance(v, (dict, list)) else v)
          for k, v in params.items() if v is not None}).encode()
-    with urllib.request.urlopen(API + "/" + method, data=data, timeout=30) as r:
-        return json.load(r)
+    try:
+        with urllib.request.urlopen(API + "/" + method, data=data, timeout=30) as r:
+            return json.load(r)
+    except urllib.error.HTTPError as e:
+        # Telegram puts the actual reason in the BODY — "chat not found",
+        # "message text is empty", "button_data_invalid". Raising the bare
+        # status discards the only useful part, which is exactly how two real
+        # messages turned into an unexplained 400 and were then consumed.
+        body = e.read().decode("utf-8", "replace")[:400]
+        raise RuntimeError(f"{method} -> {e.code}: {body}") from None
 
 
 def classify(text):
@@ -147,8 +155,10 @@ def main():
                 handle_callback(u["callback_query"])
         except Exception as e:
             # One bad update must not wedge the offset forever, or the bot
-            # replays the same failure every five minutes until someone notices.
-            print(f"::warning::update {u['update_id']} failed: {e}")
+            # replays the same failure every five minutes until someone
+            # notices. But it is consumed either way, so say so loudly: the
+            # sender's message is gone and they will have to send it again.
+            print(f"::error::update {u['update_id']} failed and was dropped: {e}")
     OFFSET_F.parent.mkdir(parents=True, exist_ok=True)
     OFFSET_F.write_text(str(offset) + "\n")
     print(f"offset now {offset}")
