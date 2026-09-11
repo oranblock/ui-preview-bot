@@ -67,6 +67,19 @@ aborted the re-render entirely. Nine taps did nothing at all.
 `repository_dispatch`. `setWebhook` and `getUpdates` are mutually exclusive, so
 the poller must be deleted, not left as a fallback.
 
+## One Worker, two backends
+
+A Telegram bot has **exactly one webhook URL** — `setWebhook` replaces whatever
+was there. So a second bot means a second token and re-pointing the first.
+
+Route by command in the one Worker instead, and give it a variable per target
+repo. This one sends source files to its own repo and `/scan` plus `.apk`/`.ipa`
+to `mobsf-scan-bot`. Ten lines, no new bot, no new webhook.
+
+The dispatch token must then list **every** repo it fires at, or the second
+backend answers `403 Resource not accessible by personal access token` while the
+first keeps working.
+
 ## repository_dispatch needs Contents, not Actions
 
 A fine-grained token creating a repository dispatch requires **`Contents: read
@@ -101,6 +114,30 @@ the chat**, not only to the log. Use `npx wrangler tail` to watch live.
 
 Always return 200 from a Telegram webhook regardless: a non-2xx makes Telegram
 retry, and a retry storm on a bug is worse than a dropped update.
+
+## Prefer the non-destructive command
+
+Debugging CI means scratch directories and dirty working trees, and the quick
+cleanup is usually the one that loses something.
+
+| reaching for | use instead | because |
+| :--- | :--- | :--- |
+| `rm -rf scratch && mkdir scratch` | a **new** directory name | nothing to recover if the path expanded wrong |
+| `git checkout -- .` | `git restore <path>` | `.` discards every unrelated edit in the tree |
+| discarding to unblock a pull | `git stash push <path>` then `stash pop` | keeps work that exists nowhere else |
+
+The cost is not hypothetical. A `git checkout -- .` run to unblock a `git pull`
+would have wiped an **uncommitted** `wrangler.toml` holding a KV namespace id and
+a chat allowlist — values deliberately not committed, and therefore stored
+nowhere else. `git stash push worker/wrangler.toml`, pull, `stash pop` kept them.
+
+Rule: before deleting or overwriting, look at the target first. When a command
+deletes, overwrites, force-pushes or rewrites history, say out loud what it
+touches and how to undo it **before** running it, not after something is gone.
+
+Specific to this bot: `worker/wrangler.toml` holds the KV namespace id and the
+chat allowlist and is intentionally uncommitted, so any command that discards
+working-tree changes destroys the only copy. Stash that path by name.
 
 ## Telegram details that cost time
 
