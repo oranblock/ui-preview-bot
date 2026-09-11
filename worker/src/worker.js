@@ -56,8 +56,8 @@ function keyboard(id, platform, theme, device) {
  *  workflow input, and the workflow writes it from an env var — interpolating
  *  user-supplied source into a `run:` block would be remote code execution on
  *  the runner. */
-async function dispatch(env, payload) {
-  const r = await fetch(`https://api.github.com/repos/${env.GITHUB_REPO}/dispatches`, {
+async function dispatch(env, payload, repo, eventType) {
+  const r = await fetch(`https://api.github.com/repos/${repo || env.GITHUB_REPO}/dispatches`, {
     method: "POST",
     headers: {
       authorization: `Bearer ${env.GITHUB_TOKEN}`,
@@ -65,7 +65,7 @@ async function dispatch(env, payload) {
       "content-type": "application/json",
       "user-agent": "ui-preview-bot-worker",
     },
-    body: JSON.stringify({ event_type: "render", client_payload: payload }),
+    body: JSON.stringify({ event_type: eventType || "render", client_payload: payload }),
   });
   if (!r.ok) {
     const body = (await r.text()).slice(0, 200);
@@ -138,11 +138,56 @@ async function onMessage(env, msg) {
   const chat = msg.chat.id;
   if (!allowed(env, chat)) return;
 
+  // /scan goes to a different repo entirely. A bot has exactly ONE webhook URL,
+  // so routing by command here is what lets one Worker serve two backends
+  // without a second bot and a second token.
+  const scanCmd = (msg.text || "").trim().match(/^\/scan(?:@\S+)?\s+(\S+)/);
+  if (scanCmd) {
+    const arg = scanCmd[1];
+    const payload = { chat_id: String(chat) };
+    if (/^\d+$/.test(arg)) payload.run_id = arg;
+    else {
+      await tg(env, "sendMessage", { chat_id: chat,
+        text: "Usage: /scan <build run id>\nOr send an .apk/.ipa under 20 MB." });
+      return;
+    }
+    await tg(env, "sendMessage", { chat_id: chat, text: `queued MobSF scan of run ${arg}` });
+    await dispatch(env, payload, env.SCAN_REPO, "scan");
+    return;
+  }
+
   if (msg.document) {
     const f = await fetchDocument(env, msg.document);
     if (!f) {
+      // An app package is a scan job, not a render job.
+      const an = msg.document.file_name || "";
+      if (/\.(apk|ipa)$/i.test(an)) {
+        // The cloud Bot API refuses to hand a bot anything over 20 MB, and a
+        // debug APK is routinely larger. Say so with the number rather than
+        // failing inside getFile.
+        if ((msg.document.file_size || 0) > 20 * 1024 * 1024) {
+          await tg(env, "sendMessage", { chat_id: chat, text:
+            `${an} is ${Math.round(msg.document.file_size / 1048576)} MB. Telegram ` +
+            `caps what a bot can download at 20 MB, so send /scan <build run id> instead.` });
+          return;
+        }
+        const info = await tg(env, "getFile", { file_id: msg.document.file_id });
+        if (!info.ok) throw new Error(`getFile: ${info.description}`);
+        const r = await fetch(
+          `https://api.telegram.org/file/bot${env.TELEGRAM_BOT_TOKEN}/${info.result.file_path}`);
+        const encoded = b64(await r.arrayBuffer());
+        if (encoded.length > 55000) {
+          await tg(env, "sendMessage", { chat_id: chat, text:
+            `${an} is too large to pass through a dispatch payload — use /scan <run id>.` });
+          return;
+        }
+        await tg(env, "sendMessage", { chat_id: chat, text: `queued MobSF scan of ${an}` });
+        await dispatch(env, { chat_id: String(chat), file_b64: encoded, file_name: an },
+                       env.SCAN_REPO, "scan");
+        return;
+      }
       await tg(env, "sendMessage", { chat_id: chat,
-        text: `I render .kt, .swift and .zip files. ${msg.document.file_name || "that"} is none of those.` });
+        text: `I render .kt, .swift and .zip, and scan .apk and .ipa. ${an || "that"} is none of those.` });
       return;
     }
 
@@ -177,8 +222,12 @@ async function onMessage(env, msg) {
     await tg(env, "sendMessage", { chat_id: chat, text:
       "Send me a SwiftUI or Jetpack Compose snippet and I will render it.\n\n" +
       "Compose:  @Composable fun Preview()\n" +
-      "SwiftUI:  struct Preview: View\n\n" +
-      "Renders take 1-3 minutes: the picture is drawn by GitHub Actions." });
+      "SwiftUI:  struct Preview: View\n" +
+      "A .zip of several files works too.\n\n" +
+      "Security scan:\n" +
+      "/scan <build run id>   MobSF on that build's APK\n" +
+      "or send an .apk/.ipa under 20 MB\n\n" +
+      "Renders take 1-3 minutes, scans longer. GitHub Actions does the work." });
     return;
   }
 
